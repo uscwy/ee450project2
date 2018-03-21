@@ -107,7 +107,7 @@ the memory is dynamically allocated, caller need to free it after use.
 char* GBNUDP_receive() {
 	struct sockaddr sender;
 	socklen_t addrlen;
-	int efd, ret;
+	int ret;
 	char *str = NULL;
 	struct epoll_event ev;
 	char ipstr[32];
