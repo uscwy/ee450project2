@@ -11,6 +11,7 @@
 #include <sys/wait.h>
 #include <sys/epoll.h>
 #include <syscall.h>
+#include <zlib.h>
 #include <iostream>
 #include <cmath>
 
@@ -71,13 +72,24 @@ void cleanup(const char *errmsg) {
 	}
 }
 /*caculate and return CRC for packet*/
-uint32_t crc32(packet_t *pkg)
+uint32_t pkg_crc32(packet_t *pkg)
 {
-	return 0;
+	uLong crc = crc32(0L, Z_NULL, 0);
+
+	crc = crc32(crc, (Bytef *)&(pkg->flg), sizeof(pkg->flg));
+	crc = crc32(crc, (Bytef *)&(pkg->seq), sizeof(pkg->seq));
+	crc = crc32(crc, (Bytef *)&(pkg->data[0]), sizeof(pkg->data));
+	
+	return (uint32_t)crc;
 }
 /*check CRC, return 0 if success*/
 int crc_check(packet_t *pkg)
 {
+	if(ntohl(pkg->crc32) != pkg_crc32(pkg))
+	{
+		cout << "Packet discarded due to corruption" << endl;
+		return -1;
+	}
 	return 0;
 }
 /*send ack to sender*/
@@ -88,7 +100,7 @@ int send_ack(int s, packet_t *pkg, struct sockaddr *dst, socklen_t len, unsigned
 	ack.seq = pkg->seq;
 	ack.flg = pkg->flg | ACK_FLG;
 	ack.data[0] = 0;
-	ack.crc32 = htonl(crc32(&ack));
+	ack.crc32 = htonl(pkg_crc32(&ack));
 	cout << "Sending ACK with SEQ # " << ntohl(ack.seq);
 	if((pkg->flg & FIN_FLG) > 0)
 	{
@@ -182,7 +194,6 @@ char* GBNUDP_receive() {
 		else if(crc_check(pkg) < 0)
 		{
 			/*drop packets with wrong CRC*/
-			cout << "Drop packet (wrong CRC)" << endl;
 			continue;
 		}
 		/*SYN packet, we only accept SYN before receiving normal data(seq_exp <=1)*/
@@ -213,11 +224,45 @@ char* GBNUDP_receive() {
 			seq_exp++;
 			send_ack(sockfd, pkg, &sender, addrlen, seq_exp);
 		}
+		else if(ntohl(pkg->seq) == seq_exp - 1)
+		{
+			send_ack(sockfd, pkg, &sender, addrlen, seq_exp);
+		}
+		else
+		{
+			cout << "Out of order SEQ # " << ntohl(pkg->seq)  << endl;
+		}
 	}
-	/*close socket and free resources*/
-	cleanup(NULL);
-	
+
 	return str;
+}
+/*waits for 5 seconds during which receiver responds to 
+any newly arriving FIN packets with an ACK*/
+void close_wait()
+{
+	struct timespec spec;
+	unsigned long waittime = 0;
+	struct sockaddr sender;
+	socklen_t addrlen;
+	int ret;
+	packet_t *pkg = (packet_t *)&buf[0];
+	
+	while(waittime < 5000) /*max wait 5 seconds*/
+	{
+		spec.tv_sec = 0;
+		spec.tv_nsec = RTT * pow(10,6);
+		nanosleep(&spec, NULL);
+		waittime += RTT;
+
+		ret = recvfrom(sockfd, pkg, BUFLEN, MSG_DONTWAIT, &sender, &addrlen);
+		if(ret == PACKET_LEN && crc_check(pkg) == 0 && (pkg->flg & FIN_FLG) > 0)
+		{
+			cout << "Sender is terminating with FIN…" << endl;
+			pkg->flg |= ACK_FLG;
+			pkg->crc32 = htonl(pkg_crc32(pkg));
+			send_ack(sockfd, pkg, &sender, addrlen, 0);
+		}
+	}
 }
 int main()
 {
@@ -229,5 +274,10 @@ int main()
 			cout << "Reception Complete: \"" << str << "\"" << endl;
 			free(str);
 		}
+		/*receiver wait max 5 seconds to ack the FIN from sender*/
+		close_wait();
+		/*close socket and free resources*/
+		cleanup(NULL);
 	}
 }
+

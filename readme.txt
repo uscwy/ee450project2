@@ -24,15 +24,15 @@ typedef struct packet {
  * The project is located at:
    https://github.com/uscwy/ee450project2
    
-   sender.cpp    	Implementation of sender
-   receiver.cpp     Implementation of receiver
-   test.sh	  		A simple test script
+   sender.cpp    Implementation of sender
+   receiver.cpp  Implementation of receiver
+
 
 
 REQUIREMENTS
 ------------
 
-This project need Mininet enviroment to run.
+This project need Mininet to simulate network latency and packet loss.
 
 
 MAINTAINER

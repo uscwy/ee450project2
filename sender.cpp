@@ -10,12 +10,13 @@
 #include <arpa/inet.h>
 #include <sys/wait.h>
 #include <sys/time.h>
+#include <zlib.h>
 #include <iostream>
 #include <string>
 #include <cmath>
 
 #define SRV_PORT		"18200"
-#define SRV_NAME		"127.0.0.1"
+#define SRV_NAME		"10.0.0.2"
 #define MAX_STR_LEN		(1024-1)
 #define BUFLEN			1024
 #define WND_SIZE		5
@@ -65,26 +66,37 @@ void cleanup_exit(const char *errmsg) {
 	return;
 }
 /*caculate and return CRC for packet*/
-uint32_t crc32(packet_t *pkg)
+uint32_t pkg_crc32(packet_t *pkg)
 {
-	return 0;
+	uLong crc = crc32(0L, Z_NULL, 0);
+
+	crc = crc32(crc, (Bytef *)&(pkg->flg), sizeof(pkg->flg));
+	crc = crc32(crc, (Bytef *)&(pkg->seq), sizeof(pkg->seq));
+	crc = crc32(crc, (Bytef *)&(pkg->data[0]), sizeof(pkg->data));
+	//cout << "crc is " << crc << endl;
+	return (uint32_t)crc;
 }
 /*check CRC, return 0 if success*/
 int crc_check(packet_t *pkg)
 {
+	if(ntohl(pkg->crc32) != pkg_crc32(pkg))
+	{
+		cout << "Packet discarded due to corruption" << endl;
+		return -1;
+	}
 	return 0;
 }
 /*send data to receiver*/
 void GBNUDP_send(const char *data)
 {
-	int sockfd, ret;
+	int sockfd, ret, connected;
 	struct addrinfo hints;
 	struct sockaddr addr;
 	socklen_t addrlen = sizeof(addr);
-	struct timeval tv1,tv2;
+
 	struct timespec spec;
-	unsigned int waittime, total;
-	unsigned long last_send, last_ack, wnd_max, trans;
+	unsigned long waittime, total;
+	unsigned long last_send, last_ack, wnd_max;
 	packet_t *pkg;
 	
 	memset(&hints, 0, sizeof(hints));
@@ -103,73 +115,50 @@ void GBNUDP_send(const char *data)
 	}
 	pkg = (packet_t *)&buf[0];
 	memset(pkg, 0, HEADER_LEN);
-	/*SYN packet*/
-	pkg->flg |= SYN_FLG;
-	pkg->seq = 0;
-	pkg->data[0] = 0;
-	pkg->crc32 = crc32(pkg);
+
 	/*inital sleep time*/
 	spec.tv_sec = 0;
 	spec.tv_nsec = 20 * pow(10,6);
-	/*try to make connection*/
-	bool acked = false;
-	int retry = 0;
-	while(!acked)
-	{
-		/*send SYN packet, seq = 0*/
-		cout << "Establishing a connection to receiver... (sending SYN)" << endl;
-		if((ret = sendto(sockfd, pkg, PACKET_LEN, 0,
-						res->ai_addr, res->ai_addrlen)) == -1) {
-			cerr << "send failed" << endl;
-		}
-		waittime = 0;
-		retry++;
-		ret = -1;
-		/*recv ACK*/
-		while(waittime < 2*RTT && ret < 0)
-		{
-			nanosleep(&spec, NULL);
-			waittime += spec.tv_nsec/pow(10,6);
-			ret = recvfrom(sockfd, pkg, BUFLEN, MSG_DONTWAIT, &addr, &addrlen);
-		}
-		/*verify packet*/
-		if(ret == PACKET_LEN && crc_check(pkg) == 0 
-			&& ntohl(pkg->seq) == 0 && (pkg->flg & ACK_FLG) > 0)
-		{
-			cout << "ACK Received with SEQ# 0" << endl;
-			acked = true;
-			break;
-		}
-		if(retry > 2)
-		{
-			cout << "Make connection failed" << endl;
-			return;
-		}
-	}
-	/*record current time*/
-    gettimeofday(&tv1, NULL);
 
 	/*inital sliding window control*/
-	wnd_min = 0;
 	last_send = 0;
 	last_ack = 0;
 	waittime = 0;
+	connected = 0;
 	
 	total = strlen(data);
 	/*send packets until receive ack of the last packet.*/
 	while(last_ack < total)
 	{
-		wnd_max = last_ack + WND_SIZE;
-		if(wnd_max > total) 
-			wnd_max = total;
+		/*first SYN packet*/
+		if(connected == 0)
+		{
+			/*for syn, change windows size to 1*/
+			wnd_max = 1;
+		}
+		else /*normal packet*/
+		{
+			wnd_max = last_ack + WND_SIZE;
+			if(wnd_max > total) wnd_max = total;
+			
+		}
 		/*send packets in window*/
 		while(last_send < wnd_max)
 		{
-			pkg->flg = 0;
-			pkg->data[0] = data[last_send]; 
-			pkg->seq = htonl(last_send+1); 
-			pkg->crc32 = htonl(crc32(pkg));
-			cout << "Sending character \"" << pkg->data[0] << "\"" << endl;
+			if(connected == 1) 
+			{
+				pkg->flg = 0;
+				pkg->data[0] = data[last_send]; 
+				pkg->seq = htonl(last_send+1); 
+				cout << "Sending character \"" << pkg->data[0] << "\"" << endl;
+			}
+			else
+			{
+				pkg->flg = SYN_FLG;
+				pkg->seq = 0;
+				cout << "Establishing a connection to receiver... (sending SYN)" << endl;
+			}
+			pkg->crc32 = htonl(pkg_crc32(pkg));
 			ret = sendto(sockfd, pkg, PACKET_LEN, 0, res->ai_addr, res->ai_addrlen);
 			if(ret == PACKET_LEN)
 			{
@@ -188,6 +177,11 @@ void GBNUDP_send(const char *data)
 				/*reset timer*/
 				waittime = 0;
 			}
+			else if(ntohl(pkg->seq) == 0) /*first ACK */
+			{
+				connected = 1;
+				last_send = 0;
+			}
 		}
 		else if(ret < 0)
 		{
@@ -205,17 +199,14 @@ void GBNUDP_send(const char *data)
 		}
 	}
 	
-	gettimeofday(&tv2, NULL);
-	trans = tv2.tv_usec + ((tv2.tv_sec - tv1.tv_sec) * pow(10,6)) - tv1.tv_usec;
-	cout << "Total transfer time: " << trans << "(us)" << endl;
 	/*FIN packet*/
 	pkg->flg = FIN_FLG;
 	pkg->seq = htonl(last_ack + 1);
 	pkg->data[0] = 0;
-	pkg->crc32 = htonl(crc32(pkg));
-	acked = false;
+	pkg->crc32 = htonl(pkg_crc32(pkg));
+	bool acked = false;
 	waittime = 0;
-	retry = 0;
+	int retry = 0;
 	/*try to close connection*/
 	while(!acked)
 	{
@@ -229,7 +220,7 @@ void GBNUDP_send(const char *data)
 		retry++;
 		ret = -1;
 		/*recv ACK*/
-		while(waittime < 2*RTT && ret < 0)
+		while(waittime < RTT && ret < 0)
 		{
 			nanosleep(&spec, NULL);
 			waittime += spec.tv_nsec/pow(10,6);
@@ -242,13 +233,13 @@ void GBNUDP_send(const char *data)
 			acked = true;
 			break;
 		}
-		if(retry > 2)
+		if(retry >= 25) /* 25RTT = 5seconds*/
 		{
 			cout << "Wait ACK of FIN timeout" << endl;
 			break;
 		}
 	}
-	
+
 	cout << "Done!" << endl;
 
 	return;
@@ -256,6 +247,8 @@ void GBNUDP_send(const char *data)
 
 int main(int argc, char **argv) 
 {
+	struct timeval tv1,tv2;
+	unsigned long t;
 	string str;
 	/*get number from shell parameter*/
 	if(argc > 1) {
@@ -276,9 +269,16 @@ int main(int argc, char **argv)
 		cout << "String is too long." << endl;
 		return 0;
 	}
-	
+		
+	/*record current time*/
+    gettimeofday(&tv1, NULL);
+
 	GBNUDP_send(str.c_str());
 	
+	gettimeofday(&tv2, NULL);
+	t = tv2.tv_usec + ((tv2.tv_sec - tv1.tv_sec) * pow(10,6)) - tv1.tv_usec;
+	cout << "Total transfer time: " << t << "(us)" << endl;
+
 	cleanup_exit(NULL);
 	return 0;
 }
