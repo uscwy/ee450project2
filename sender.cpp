@@ -277,7 +277,7 @@ int main(int argc, char **argv)
 	
 	gettimeofday(&tv2, NULL);
 	t = tv2.tv_usec + ((tv2.tv_sec - tv1.tv_sec) * pow(10,6)) - tv1.tv_usec;
-	cout << "Total transfer time: " << t << "(us)" << endl;
+	cout << "Total transfer time: " << t << "(us) length=" << str.length() << endl;
 
 	cleanup_exit(NULL);
 	return 0;

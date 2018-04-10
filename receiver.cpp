@@ -97,8 +97,8 @@ int send_ack(int s, packet_t *pkg, struct sockaddr *dst, socklen_t len, unsigned
 {
 	packet_t ack;
 	
-	ack.seq = pkg->seq;
-	ack.flg = pkg->flg | ACK_FLG;
+	ack.seq = htonl(exp - 1); /*The SEQ# of last packet accepted is ACKed (always)*/
+	ack.flg = ACK_FLG;
 	ack.data[0] = 0;
 	ack.crc32 = htonl(pkg_crc32(&ack));
 	cout << "Sending ACK with SEQ # " << ntohl(ack.seq);
@@ -204,14 +204,14 @@ char* GBNUDP_receive() {
 			cout << "Connection request received from " ;
 			cout << "<" << ipstr << ":" << ntohs(s->sin_port) << ">" << endl;
 			seq_exp = 1;
-			send_ack(sockfd, pkg, &sender, addrlen, seq_exp);
+			send_ack(sockfd, pkg, &sender, addrlen, seq_exp); 
 		}
 		/*FIN packet*/
 		else if((pkg->flg & FIN_FLG) > 0)
 		{
 			cout << "Sender is terminating with FIN…" << endl;
+			seq_exp++;
 			send_ack(sockfd, pkg, &sender, addrlen, seq_exp);
-			/*there is a situation that ACK of FIN lost, sender need to handle it by itself*/
 			fin = true;
 			break;
 		}
@@ -224,13 +224,10 @@ char* GBNUDP_receive() {
 			seq_exp++;
 			send_ack(sockfd, pkg, &sender, addrlen, seq_exp);
 		}
-		else if(ntohl(pkg->seq) == seq_exp - 1)
-		{
-			send_ack(sockfd, pkg, &sender, addrlen, seq_exp);
-		}
 		else
 		{
 			cout << "Out of order SEQ # " << ntohl(pkg->seq)  << endl;
+			send_ack(sockfd, pkg, &sender, addrlen, seq_exp);
 		}
 	}
 
@@ -260,7 +257,7 @@ void close_wait()
 			cout << "Sender is terminating with FIN…" << endl;
 			pkg->flg |= ACK_FLG;
 			pkg->crc32 = htonl(pkg_crc32(pkg));
-			send_ack(sockfd, pkg, &sender, addrlen, 0);
+			send_ack(sockfd, pkg, &sender, addrlen, ntohl(pkg->seq) + 1);
 		}
 	}
 }
@@ -271,7 +268,7 @@ int main()
 		char *str = GBNUDP_receive();
 		if(str != NULL)
 		{
-			cout << "Reception Complete: \"" << str << "\"" << endl;
+			cout << "Reception Complete: \"" << str << "\" Length=" << strlen(str) << endl;
 			free(str);
 		}
 		/*receiver wait max 5 seconds to ack the FIN from sender*/
