@@ -268,7 +268,7 @@ int main()
 		char *str = GBNUDP_receive();
 		if(str != NULL)
 		{
-			cout << "Reception Complete: \"" << str << "\" Length=" << strlen(str) << endl;
+			cout << "Reception Complete: \"" << str << "\"" << endl;
 			free(str);
 		}
 		/*receiver wait max 5 seconds to ack the FIN from sender*/

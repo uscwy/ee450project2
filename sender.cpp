@@ -29,7 +29,7 @@ char buf[BUFLEN];
 int sockfd;
 struct addrinfo *res = NULL;
 unsigned int last_ack, wnd_min; /*the last received ack*/
-
+unsigned long packet_rec = 0, packet_send = 0;
 #define ACK_FLG (1<<3)
 #define SYN_FLG (1<<2)
 #define FIN_FLG (1<<1)
@@ -160,6 +160,7 @@ void GBNUDP_send(const char *data)
 			}
 			pkg->crc32 = htonl(pkg_crc32(pkg));
 			ret = sendto(sockfd, pkg, PACKET_LEN, 0, res->ai_addr, res->ai_addrlen);
+			packet_send++; /*for statistic*/
 			if(ret == PACKET_LEN)
 			{
 				last_send++;
@@ -182,6 +183,7 @@ void GBNUDP_send(const char *data)
 				connected = 1;
 				last_send = 0;
 			}
+			packet_rec++; /*for statictic*/
 		}
 		else if(ret < 0)
 		{
@@ -220,7 +222,7 @@ void GBNUDP_send(const char *data)
 		retry++;
 		ret = -1;
 		/*recv ACK*/
-		while(waittime < RTT && ret < 0)
+		while(waittime < 2*RTT && ret < 0)
 		{
 			nanosleep(&spec, NULL);
 			waittime += spec.tv_nsec/pow(10,6);
@@ -269,15 +271,16 @@ int main(int argc, char **argv)
 		cout << "String is too long." << endl;
 		return 0;
 	}
-		
+	
 	/*record current time*/
     gettimeofday(&tv1, NULL);
 
 	GBNUDP_send(str.c_str());
 	
 	gettimeofday(&tv2, NULL);
-	t = tv2.tv_usec + ((tv2.tv_sec - tv1.tv_sec) * pow(10,6)) - tv1.tv_usec;
-	cout << "Total transfer time: " << t << "(us) length=" << str.length() << endl;
+	t =  (tv2.tv_sec - tv1.tv_sec) * pow(10,6) + tv2.tv_usec- tv1.tv_usec;
+	cout << "Total transfer time: " << t/1000 << "(ms)" << endl;
+	printf("Sent: %lu packets; Received: %lu packets\n", packet_send, packet_rec);
 
 	cleanup_exit(NULL);
 	return 0;
